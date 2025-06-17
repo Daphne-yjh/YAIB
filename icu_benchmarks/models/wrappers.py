@@ -10,6 +10,7 @@ from torch.nn import MSELoss, CrossEntropyLoss
 import torch.nn as nn
 from torch import Tensor, FloatTensor
 from torch.optim import Optimizer, Adam
+import os
 
 import inspect
 import gin
@@ -346,6 +347,27 @@ class DLPredictionWrapper(DLWrapper):
             raise ValueError(f"Run mode {self.run_mode} not yet supported. Please implement it.")
         transformed_output = self.output_transform((prediction, target))
 
+        # --- Save transformed predictions to disk on Linux remote server ---
+        if step_prefix == "test":
+            save_dir = "dl_preds_full"
+            os.makedirs(save_dir, exist_ok=True)
+            # Save predictions (first element of transformed_output) as numpy array
+            preds = transformed_output[0].detach().cpu().numpy() if isinstance(transformed_output, tuple) else transformed_output.detach().cpu().numpy()
+            # Use process id for unique filenames
+            # batch_idx = getattr(self, "current_batch_idx", 0)
+            filename = os.path.join(save_dir, f"preds_{os.getpid()}.npy")
+            if os.path.exists(filename):
+                existing_preds = np.load(filename)
+                preds = np.concatenate([existing_preds, preds], axis=0)
+            np.save(filename, preds)
+            if isinstance(transformed_output, tuple):
+                targs = transformed_output[1].detach().cpu().numpy()
+                t_filename = os.path.join(save_dir, f"targs_{os.getpid()}.npy")
+                if os.path.exists(t_filename):
+                    existing_targs = np.load(t_filename)
+                    targs = np.concatenate([existing_targs, targs], axis=0)
+                np.save(t_filename, targs)
+
         for key, value in self.metrics[step_prefix].items():
             if isinstance(value, torchmetrics.Metric):
                 if key == "Binary_Fairness":
@@ -497,7 +519,7 @@ class MLWrapper(BaseModule, ABC):
             pred_indicators = np.hstack((pred_indicators, test_pred))
             # Save as: id, time (hours), ground truth, prediction 0, prediction 1
             np.savetxt(Path(self.logger.save_dir) / "pred_indicators.csv", pred_indicators, delimiter=",")
-            logging.debug(f"Saved row indicators to {Path(self.logger.save_dir) / 'row_indicators.csv'}")
+            logging.debug(f"Saved row indicators to {Path(self.logger.save_dir) / f'row_indicators.csv'}")
         else:
             logging.warning("Could not save row indicators.")
 
